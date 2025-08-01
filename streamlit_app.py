@@ -8,21 +8,22 @@ from streamlit_autorefresh import st_autorefresh
 BROKER = os.getenv("MQTT_BROKER", "localhost")
 PORT = int(os.getenv("MQTT_PORT", 1883))
 
-# Diccionarios globales para almacenar los datos de los sensores
-sensor_data = {
-    "temperature": [],
-    "humidity": [],
-    "leaf_color": []
-}
+# Inicializar estado si no existe
+if "sensor_data" not in st.session_state:
+    st.session_state.sensor_data = {
+        "temperature": [],
+        "humidity": [],
+        "leaf_color": []
+    }
 
-# Diccionario para almacenar los últimos valores recibidos
-last_values = {
-    "temperature": None,
-    "humidity": None,
-    "leaf_color": None,
-    "water_motor": None,
-    "alert": ""
-}
+if "last_values" not in st.session_state:
+    st.session_state.last_values = {
+        "temperature": None,
+        "humidity": None,
+        "leaf_color": "N/A",
+        "water_motor": "N/A",
+        "alert": "N/A"
+    }
 
 # Temas MQTT
 TOPICS = {
@@ -33,6 +34,7 @@ TOPICS = {
     "alerts": "plant/alerts"
 }
 
+# Función cuando el cliente se conecta
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
         print("Conectado al broker MQTT")
@@ -41,78 +43,78 @@ def on_connect(client, userdata, flags, rc):
     else:
         print(f"Error al conectar: {rc}")
 
+# Función cuando se recibe un mensaje
 def on_message(client, userdata, msg):
     topic = msg.topic
     value = msg.payload.decode("utf-8")
 
     if topic == TOPICS["temperature"]:
         temp = round(float(value), 2)
-        sensor_data["temperature"].append(temp)
-        last_values["temperature"] = temp
+        st.session_state.sensor_data["temperature"].append(temp)
+        st.session_state.last_values["temperature"] = temp
+
     elif topic == TOPICS["humidity"]:
         hum = round(float(value), 2)
-        sensor_data["humidity"].append(hum)
-        last_values["humidity"] = hum
+        st.session_state.sensor_data["humidity"].append(hum)
+        st.session_state.last_values["humidity"] = hum
+
     elif topic == TOPICS["leaf_color"]:
-        sensor_data["leaf_color"].append(value)
-        last_values["leaf_color"] = value
+        st.session_state.sensor_data["leaf_color"].append(value)
+        st.session_state.last_values["leaf_color"] = value
+
     elif topic == TOPICS["water_motor"]:
-        last_values["water_motor"] = "Encendido" if "ENCENDER" in value else "Apagado"
+        st.session_state.last_values["water_motor"] = "Encendido" if "ENCENDER" in value else "Apagado"
+
     elif topic == TOPICS["alerts"]:
-        last_values["alert"] = value if "Humedad críticamente baja" in value else "Sistema funcionando con normalidad"
+        st.session_state.last_values["alert"] = value if "Humedad críticamente baja" in value else "Sistema funcionando con normalidad"
 
-# Inicializar cliente MQTT
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
-client.connect(BROKER, PORT, 60)
-client.loop_start()
+# Inicializar cliente MQTT (solo una vez)
+if "mqtt_client_started" not in st.session_state:
+    client = mqtt.Client()
+    client.on_connect = on_connect
+    client.on_message = on_message
+    client.connect(BROKER, PORT, 60)
+    client.loop_start()
+    st.session_state.mqtt_client_started = True
 
-# Título de la app
+# 🌿 Título
 st.title("🌿 Sistema Domótico para Control de Plantas")
 
-# Contenedores
-last_values_container = st.empty()
-averages_container = st.empty()
-graph_container = st.empty()
+# 🔄 Refresco automático cada 2 segundos
+st_autorefresh(interval=2000, limit=0, key="refresh")
 
-def update_dashboard():
-    # Mostrar los últimos valores
-    with last_values_container.container():
-        st.subheader("🌡️ Últimos valores")
-        st.text(f"Temperatura: {last_values['temperature']:.2f}°C" if last_values['temperature'] is not None else "Temperatura: N/A")
-        st.text(f"Humedad: {last_values['humidity']:.2f}%" if last_values['humidity'] is not None else "Humedad: N/A")
-        st.text(f"Color de hojas: {last_values['leaf_color'] or 'N/A'}")
-        st.text(f"Estado del motor de agua: {last_values['water_motor'] or 'N/A'}")
-        st.text(f"Estado del sistema: {last_values['alert'] or 'N/A'}")
+# 📡 Mostrar últimos valores
+st.subheader("🌡️ Últimos valores")
+st.text(f"Temperatura: {st.session_state.last_values['temperature']:.2f}°C" if st.session_state.last_values['temperature'] is not None else "Temperatura: N/A")
+st.text(f"Humedad: {st.session_state.last_values['humidity']:.2f}%" if st.session_state.last_values['humidity'] is not None else "Humedad: N/A")
+st.text(f"Color de hojas: {st.session_state.last_values['leaf_color']}")
+st.text(f"Estado del motor de agua: {st.session_state.last_values['water_motor']}")
+st.text(f"Estado del sistema: {st.session_state.last_values['alert']}")
 
-    # Mostrar promedios
-    with averages_container.container():
-        st.subheader("📊 Promedio de valores registrados")
-        temp_avg = round(sum(sensor_data['temperature']) / len(sensor_data['temperature']), 2) if sensor_data['temperature'] else 'N/A'
-        hum_avg = round(sum(sensor_data['humidity']) / len(sensor_data['humidity']), 2) if sensor_data['humidity'] else 'N/A'
-        st.text(f"Temperatura Promedio: {temp_avg}°C")
-        st.text(f"Humedad Promedio: {hum_avg}%")
+# 📊 Promedios
+st.subheader("📊 Promedio de valores registrados")
+temp_data = st.session_state.sensor_data['temperature']
+hum_data = st.session_state.sensor_data['humidity']
+temp_avg = round(sum(temp_data)/len(temp_data), 2) if temp_data else 'N/A'
+hum_avg = round(sum(hum_data)/len(hum_data), 2) if hum_data else 'N/A'
+st.text(f"Temperatura Promedio: {temp_avg}°C")
+st.text(f"Humedad Promedio: {hum_avg}%")
 
-    # Graficar datos
-    with graph_container.container():
-        st.subheader("📈 Gráficas de los sensores")
-        fig, ax = plt.subplots()
-        if sensor_data['temperature']:
-            ax.plot(sensor_data['temperature'], label="Temperatura")
-        if sensor_data['humidity']:
-            ax.plot(sensor_data['humidity'], label="Humedad")
-        ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
-        st.pyplot(fig)
+# 📈 Gráficas
+st.subheader("📈 Gráficas de los sensores")
+fig, ax = plt.subplots()
+if temp_data:
+    ax.plot(temp_data, label="Temperatura", color='red')
+if hum_data:
+    ax.plot(hum_data, label="Humedad", color='blue')
+ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+st.pyplot(fig)
 
-        if sensor_data['leaf_color']:
-            st.subheader("🌿 Evolución del Color de las Hojas")
-            fig2, ax2 = plt.subplots()
-            ax2.plot(range(len(sensor_data['leaf_color'])), sensor_data['leaf_color'], marker='o', label="Color de Hojas")
-            ax2.legend(loc="upper left", bbox_to_anchor=(1, 1))
-            st.pyplot(fig2)
-
-# Refrescar la app cada 2 segundos
-st_autorefresh(interval=2000, limit=0, key="mqtt_refresh")
-update_dashboard()
-
+# 🌿 Evolución del color de hojas
+leaf_data = st.session_state.sensor_data["leaf_color"]
+if leaf_data:
+    st.subheader("🌿 Evolución del Color de las Hojas")
+    fig2, ax2 = plt.subplots()
+    ax2.plot(range(len(leaf_data)), leaf_data, marker='o', label="Color de Hojas", color='green')
+    ax2.legend(loc="upper left", bbox_to_anchor=(1, 1))
+    st.pyplot(fig2)
