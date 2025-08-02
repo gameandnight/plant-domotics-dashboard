@@ -8,9 +8,13 @@ import paho.mqtt.client as mqtt
 import matplotlib.pyplot as plt
 from streamlit_autorefresh import st_autorefresh
 
-# ─── Config Broker ────────────────────────────────────────────────────────────
-BROKER   = os.getenv("MQTT_BROKER", "445a4eae8e134615a3ce69a534d296ab.s1.eu.hivemq.cloud")
-PORT     = int(os.getenv("MQTT_PORT", 8883))
+# ─── Config Broker desde Secrets o ENV ─────────────────────────────────────────
+# En Streamlit Cloud define en Settings → Secrets: MQTT_BROKER, MQTT_PORT,
+# MQTT_USERNAME y MQTT_PASSWORD.
+BROKER   = st.secrets.get("MQTT_BROKER", os.getenv("MQTT_BROKER", "localhost"))
+PORT     = int(st.secrets.get("MQTT_PORT",   os.getenv("MQTT_PORT", 1883)))
+USERNAME = st.secrets.get("MQTT_USERNAME", os.getenv("MQTT_USERNAME", None))
+PASSWORD = st.secrets.get("MQTT_PASSWORD", os.getenv("MQTT_PASSWORD", None))
 
 TOPICS = {
     "temperature": "plant/temperature",
@@ -20,25 +24,32 @@ TOPICS = {
     "alerts":      "plant/alerts",
 }
 
-# ─── Estado global (session_state) ─────────────────────────────────────────────
+# ─── Estado global ──────────────────────────────────────────────────────────────
 if "data" not in st.session_state:
     st.session_state.data = {k: [] for k in TOPICS}
-
 if "last" not in st.session_state:
     st.session_state.last = {k: None for k in TOPICS}
 
-# ─── MQTT Subscriber ──────────────────────────────────────────────────────────
+# ─── Funciones MQTT ─────────────────────────────────────────────────────────────
+def mqtt_configure_client(client):
+    # Autenticación
+    if USERNAME and PASSWORD:
+        client.username_pw_set(USERNAME, PASSWORD)
+    # TLS para puerto 8883
+    if PORT == 8883:
+        client.tls_set()  # usa certificados CA por defecto
+
 def on_connect(c, u, f, rc):
     if rc == 0:
         for t in TOPICS.values():
             c.subscribe(t)
+    else:
+        st.error(f"Error MQTT connect: {rc}")
 
 def on_message(c, u, msg):
     topic = msg.topic
-    # invierte TOPICS dict
     name = next(k for k,v in TOPICS.items() if v==topic)
     val = msg.payload.decode()
-    # numérico o texto
     try:
         val = float(val)
     except:
@@ -46,18 +57,20 @@ def on_message(c, u, msg):
     st.session_state.data[name].append(val)
     st.session_state.last[name] = val
 
-# arranca subscriber solo una vez
-if "mqtt" not in st.session_state:
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    client.connect(BROKER, PORT, 60)
-    client.loop_start()
-    st.session_state.mqtt = client
+# ─── Arrancar Subscriber ────────────────────────────────────────────────────────
+if "mqtt_sub" not in st.session_state:
+    sub = mqtt.Client()
+    mqtt_configure_client(sub)
+    sub.on_connect = on_connect
+    sub.on_message = on_message
+    sub.connect(BROKER, PORT, 60)
+    sub.loop_start()
+    st.session_state.mqtt_sub = True
 
-# ─── MQTT Publishers internos ─────────────────────────────────────────────────
+# ─── Publisher interno ─────────────────────────────────────────────────────────
 def publisher_thread(topic, gen_func, interval=5):
     pub = mqtt.Client()
+    mqtt_configure_client(pub)
     pub.connect(BROKER, PORT, 60)
     pub.loop_start()
     while True:
@@ -65,67 +78,55 @@ def publisher_thread(topic, gen_func, interval=5):
         pub.publish(topic, payload)
         time.sleep(interval)
 
-# sólo arrancar hilos 1 vez
 if "pubs_started" not in st.session_state:
-    # temperatura 15–30°C
+    # Temperatura
     threading.Thread(target=publisher_thread,
-                     args=(TOPICS["temperature"], lambda: round(random.uniform(15,30),2)),
+                     args=(TOPICS["temperature"], lambda: round(random.uniform(15,30),2), 5),
                      daemon=True).start()
-    # humedad 10–90%
+    # Humedad
     threading.Thread(target=publisher_thread,
-                     args=(TOPICS["humidity"], lambda: round(random.uniform(10,90),2)),
+                     args=(TOPICS["humidity"], lambda: round(random.uniform(10,90),2), 5),
                      daemon=True).start()
-    # color hojas
+    # Color hojas
     threading.Thread(target=publisher_thread,
-                     args=(TOPICS["leaf_color"], lambda: random.choice(["Verde","Amarillo","Seco"])),
+                     args=(TOPICS["leaf_color"], lambda: random.choice(["Verde","Amarillo","Seco"]), 5),
                      daemon=True).start()
-    # motor y alertas
+    # Motor y alertas
     def motor_and_alert():
         h = st.session_state.last["humidity"] or 50
-        cmd = "ENCENDER" if h<40 else "APAGAR"
-        alert = "Humedad críticamente baja" if h<30 else "Todo OK"
-        return cmd, alert
-    t1 = threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["water"], lambda: motor_and_alert()[0], 5),
-        daemon=True)
-    t2 = threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["alerts"], lambda: motor_and_alert()[1], 5),
-        daemon=True)
-    t1.start(); t2.start()
+        return ("ENCENDER" if h<40 else "APAGAR", 
+                "Humedad críticamente baja" if h<30 else "Todo OK")
+    threading.Thread(target=publisher_thread,
+                     args=(TOPICS["water"],  lambda: motor_and_alert()[0], 5),
+                     daemon=True).start()
+    threading.Thread(target=publisher_thread,
+                     args=(TOPICS["alerts"], lambda: motor_and_alert()[1], 5),
+                     daemon=True).start()
     st.session_state.pubs_started = True
 
-# ─── INTERFAZ STREAMLIT ────────────────────────────────────────────────────────
+# ─── UI de Streamlit ───────────────────────────────────────────────────────────
 st.title("🌿 Sistema Domótico para Plantas")
-
-# refresco cada 2s
 st_autorefresh(interval=2000, limit=0, key="ref")
 
-# Últimos valores
 st.subheader("Últimos valores")
 for k in TOPICS:
-    v = st.session_state.last[k]
-    st.text(f"{k.capitalize()}: {v}")
+    st.text(f"{k.capitalize()}: {st.session_state.last[k]}")
 
-# Promedios
 st.subheader("Promedios")
 for k in ("temperature","humidity"):
     arr = st.session_state.data[k]
     avg = round(sum(arr)/len(arr),2) if arr else "N/A"
     st.text(f"{k.capitalize()} prom: {avg}")
 
-# Gráfica de temperatura/humedad
 st.subheader("Gráfica sensores")
 fig, ax = plt.subplots()
-for k,cname in [("temperature","r"),("humidity","b")]:
+for k,c in [("temperature","r"),("humidity","b")]:
     arr = st.session_state.data[k]
     if arr:
-        ax.plot(arr, label=k.capitalize(), color=cname)
+        ax.plot(arr, label=k.capitalize(), color=c)
 ax.legend(loc="upper left", bbox_to_anchor=(1,1))
 st.pyplot(fig)
 
-# Evolución color de hojas
 cols = st.session_state.data["leaf_color"]
 if cols:
     st.subheader("Color de hojas")
