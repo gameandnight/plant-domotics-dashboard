@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 from streamlit_autorefresh import st_autorefresh
 
 # ─── Config Broker ────────────────────────────────────────────────────────────
-BROKER   = os.getenv("MQTT_BROKER", "localhost")
-PORT     = int(os.getenv("MQTT_PORT", 1883))
+BROKER   = os.getenv("MQTT_BROKER", "445a4eae8e134615a3ce69a534d296ab.s1.eu.hivemq.cloud")
+PORT     = int(os.getenv("MQTT_PORT", 8883))
 
 TOPICS = {
     "temperature": "plant/temperature",
