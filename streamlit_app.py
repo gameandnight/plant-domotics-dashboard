@@ -1,131 +1,94 @@
 import time, threading, random
 import streamlit as st
-import paho.mqtt.client as mqtt
 import matplotlib.pyplot as plt
 from streamlit_autorefresh import st_autorefresh
 
-# ─── BROKER PÚBLICO (sin auth, sin TLS) ─────────────────────────────────────────
-BROKER = "broker.hivemq.com"
-PORT   = 1883
-
-TOPICS = {
-    "temperature": "plant/temperature",
-    "humidity":    "plant/humidity",
-    "leaf_color":  "plant/leaf_color",
-    "water":       "plant/water_motor",
-    "alerts":      "plant/alerts",
-}
-
-# ─── ESTADO GLOBAL ───────────────────────────────────────────────────────────────
+# ─── Estado global ───────────────────────────────────────────────────────────────
 if "data" not in st.session_state:
-    st.session_state.data = {k: [] for k in TOPICS}
+    st.session_state.data = {
+        "temperature": [],
+        "humidity": [],
+        "leaf_color": []
+    }
 if "last" not in st.session_state:
-    st.session_state.last = {k: None for k in TOPICS}
-if "conn_rc" not in st.session_state:
-    st.session_state.conn_rc = None
+    st.session_state.last = {
+        "temperature": None,
+        "humidity": None,
+        "leaf_color": None,
+        "water_motor": None,
+        "alert": None
+    }
 
-# ─── CALLBACKS MQTT ─────────────────────────────────────────────────────────────
-def on_connect(client, userdata, flags, rc):
-    st.session_state.conn_rc = rc
-    for topic in TOPICS.values():
-        client.subscribe(topic)
-
-def on_message(client, userdata, msg):
-    name = next(k for k,v in TOPICS.items() if v == msg.topic)
-    val = msg.payload.decode()
-    try:
-        val = float(val)
-    except:
-        pass
-    st.session_state.data[name].append(val)
-    st.session_state.last[name] = val
-
-# ─── INICIO SUBSCRIBER EN HILO DEDICADO ────────────────────────────────────────
-def start_mqtt_subscriber():
-    client = mqtt.Client()
-    client.on_connect = on_connect
-    client.on_message = on_message
-    client.connect(BROKER, PORT, 60)
-    client.loop_forever()
-
-if "mqtt_sub_started" not in st.session_state:
-    threading.Thread(target=start_mqtt_subscriber, daemon=True).start()
-    st.session_state.mqtt_sub_started = True
-
-# ─── PUBLISHERS INTERNOS ────────────────────────────────────────────────────────
-def publisher_thread(topic, gen_func, interval=5):
-    pub = mqtt.Client()
-    pub.connect(BROKER, PORT, 60)
-    pub.loop_start()
+# ─── Función simuladora ──────────────────────────────────────────────────────────
+def simulate_sensors():
     while True:
-        pub.publish(topic, gen_func())
-        time.sleep(interval)
+        # Simula valores
+        temp = round(random.uniform(15, 30), 2)
+        hum  = round(random.uniform(10, 90), 2)
+        leaf = random.choice(["Verde", "Amarillo", "Seco"])
+        # Guarda último
+        st.session_state.last["temperature"] = temp
+        st.session_state.last["humidity"]    = hum
+        st.session_state.last["leaf_color"]  = leaf
+        # Append histórico
+        st.session_state.data["temperature"].append(temp)
+        st.session_state.data["humidity"].append(hum)
+        st.session_state.data["leaf_color"].append(leaf)
+        # Motor y alerta
+        if hum < 40:
+            st.session_state.last["water_motor"] = "ENCENDER"
+        else:
+            st.session_state.last["water_motor"] = "APAGAR"
+        if hum < 30:
+            st.session_state.last["alert"] = "⚠️ Humedad críticamente baja"
+        else:
+            st.session_state.last["alert"] = "✅ Sistema OK"
+        time.sleep(5)
 
-if "pubs_started" not in st.session_state:
-    threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["temperature"], lambda: round(random.uniform(15,30),2), 5),
-        daemon=True
-    ).start()
-    threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["humidity"], lambda: round(random.uniform(10,90),2), 5),
-        daemon=True
-    ).start()
-    threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["leaf_color"], lambda: random.choice(["Verde","Amarillo","Seco"]), 5),
-        daemon=True
-    ).start()
-    def motor_and_alert():
-        h = st.session_state.last["humidity"] or 50
-        cmd = "ENCENDER" if h < 40 else "APAGAR"
-        alert = "Humedad críticamente baja" if h < 30 else "Todo OK"
-        return cmd, alert
-    threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["water"],  lambda: motor_and_alert()[0], 5),
-        daemon=True
-    ).start()
-    threading.Thread(
-        target=publisher_thread,
-        args=(TOPICS["alerts"], lambda: motor_and_alert()[1], 5),
-        daemon=True
-    ).start()
-    st.session_state.pubs_started = True
+# Arranca la simulación solo una vez
+if "sim_thread" not in st.session_state:
+    threading.Thread(target=simulate_sensors, daemon=True).start()
+    st.session_state.sim_thread = True
 
 # ─── INTERFAZ STREAMLIT ─────────────────────────────────────────────────────────
-st.title("🌿 Sistema Domótico para Plantas")
-
-# Refrescar cada 2 segundos
+st.title("🌿 Sistema Domótico para Plantas (Demo Simulada)")
 st_autorefresh(interval=2000, limit=0, key="ref")
 
-st.subheader("🔌 Estado de conexión MQTT (RC)")
-st.write(st.session_state.conn_rc)
-
+# Últimos valores
 st.subheader("Últimos valores")
-for key in TOPICS:
-    st.write(f"{key}: {st.session_state.last[key]}")
+lv = st.session_state.last
+st.write(f"🌡️ Temperatura: {lv['temperature']} °C")
+st.write(f"💧 Humedad: {lv['humidity']} %")
+st.write(f"🍃 Color de hojas: {lv['leaf_color']}")
+st.write(f"💦 Motor de agua: {lv['water_motor']}")
+st.write(f"🚨 Alerta: {lv['alert']}")
 
-st.subheader("Promedios")
-for key in ("temperature", "humidity"):
-    arr = st.session_state.data[key]
-    avg = round(sum(arr)/len(arr), 2) if arr else "N/A"
-    st.write(f"{key} promedio: {avg}")
+# Promedios
+st.subheader("📊 Promedios")
+temp_data = st.session_state.data["temperature"]
+hum_data  = st.session_state.data["humidity"]
+st.write(f"Temperatura promedio: {round(sum(temp_data)/len(temp_data),2) if temp_data else 'N/A'} °C")
+st.write(f"Humedad promedio: {round(sum(hum_data)/len(hum_data),2) if hum_data else 'N/A'} %")
 
-st.subheader("Gráfica sensores")
+# Gráficas
+st.subheader("📈 Gráfica de temperatura y humedad")
 fig, ax = plt.subplots()
-for key, color in [("temperature", "r"), ("humidity", "b")]:
-    arr = st.session_state.data[key]
-    if arr:
-        ax.plot(arr, label=key, color=color)
+if temp_data:
+    ax.plot(temp_data, label="Temperatura", color="red")
+if hum_data:
+    ax.plot(hum_data, label="Humedad", color="blue")
 ax.legend(loc="upper left", bbox_to_anchor=(1,1))
 st.pyplot(fig)
 
-cols = st.session_state.data["leaf_color"]
-if cols:
-    st.subheader("Color de hojas")
+leaf_data = st.session_state.data["leaf_color"]
+if leaf_data:
+    st.subheader("🌿 Evolución del color de las hojas")
     fig2, ax2 = plt.subplots()
-    ax2.plot(cols, marker="o")
+    # convierto colores a índices para graficar
+    mapping = {"Verde": 0, "Amarillo": 1, "Seco": 2}
+    idxs = [mapping[c] for c in leaf_data]
+    ax2.plot(idxs, marker="o")
+    ax2.set_yticks([0,1,2])
+    ax2.set_yticklabels(["Verde","Amarillo","Seco"])
     st.pyplot(fig2)
 
